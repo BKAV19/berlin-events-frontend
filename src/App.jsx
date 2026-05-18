@@ -4,6 +4,55 @@ import { MapPin, Clock, Navigation, Loader2, AlertCircle, X, ExternalLink, Share
 const API_BASE_URL = "https://berlin-events-backend-production.up.railway.app";
 
 /* ============================================================
+   BERLIN POSTAL CODE → DISTRICT MAP
+============================================================ */
+function getDistrict(venue) {
+  if (venue.area && venue.area !== "Berlin" && venue.area.trim().length > 0) {
+    return venue.area;
+  }
+  if (!venue.address) return "Other";
+  const match = venue.address.match(/\b(1[0-4]\d{3})\b/);
+  if (!match) return "Other";
+  const postal = parseInt(match[1]);
+  if (postal >= 10115 && postal <= 10179) return "Mitte";
+  if (postal >= 10243 && postal <= 10249) return "Friedrichshain";
+  if (postal >= 10315 && postal <= 10369) return "Lichtenberg";
+  if (postal >= 10405 && postal <= 10439) return "Prenzlauer Berg";
+  if (postal >= 10551 && postal <= 10589) return "Moabit";
+  if (postal >= 10623 && postal <= 10719) return "Charlottenburg";
+  if (postal >= 10777 && postal <= 10829) return "Schöneberg";
+  if (postal >= 10961 && postal <= 10999) return "Kreuzberg";
+  if (postal >= 12043 && postal <= 12099) return "Neukölln";
+  if (postal >= 12099 && postal <= 12109) return "Tempelhof";
+  if (postal >= 12157 && postal <= 12169) return "Steglitz";
+  if (postal >= 12435 && postal <= 12489) return "Treptow";
+  if (postal >= 13347 && postal <= 13359) return "Wedding";
+  if (postal >= 13509 && postal <= 13599) return "Reinickendorf";
+  return "Other";
+}
+
+/* ============================================================
+   INDOOR / OUTDOOR HEURISTIC
+============================================================ */
+const OUTDOOR_KEYWORDS = /open.?air|garden|park|rooftop|tempelhof|mauerpark|volkspark|beach|strand|biergarten|street.food|courtyard|terrace|außen|draußen/i;
+
+function isOutdoor(event) {
+  const text = `${event.title} ${event.venue} ${event.address || ""}`;
+  return OUTDOOR_KEYWORDS.test(text);
+}
+
+/* ============================================================
+   PRICE BUCKETS
+============================================================ */
+const PRICE_BUCKETS = [
+  { id: "all", label: "All", test: () => true },
+  { id: "free", label: "Free", test: e => e.isFree },
+  { id: "cheap", label: "Under €15", test: e => !e.isFree && e.priceAmount && e.priceAmount < 15 },
+  { id: "mid", label: "€15–30", test: e => e.priceAmount && e.priceAmount >= 15 && e.priceAmount < 30 },
+  { id: "high", label: "€30+", test: e => e.priceAmount && e.priceAmount >= 30 },
+];
+
+/* ============================================================
    UTILITIES
 ============================================================ */
 const haversine = (lat1, lng1, lat2, lng2) => {
@@ -63,7 +112,15 @@ const getDateStrip = () => {
   return out;
 };
 
-const ALL_CATEGORIES = ["Club", "Live Music", "Food", "Cinema", "Art", "Market", "Spoken Word", "Comedy", "Cabaret", "Wellness", "Social", "Other"];
+const ALL_CATEGORIES = ["Club", "Live Music", "Food", "Cinema", "Art", "Market", "Spoken Word", "Comedy", "Cabaret", "Wellness", "Social", "Theater", "Sports", "Family", "Other"];
+
+const SOURCE_LABELS = {
+  ra: "Resident Advisor",
+  ticketmaster: "Ticketmaster",
+  eventbrite: "Eventbrite",
+  berlinOpenData: "Berlin Open Data",
+  user: "User Added",
+};
 
 /* ============================================================
    GOING BUTTON
@@ -110,15 +167,16 @@ function EventDetail({ event, onClose, isGoing, count, onToggleGoing }) {
         </div>
 
         <div className="px-5 pt-8 pb-6 border-b-2 border-stone-900">
-          <div className="text-[9px] tracking-[0.3em] uppercase opacity-60 mb-2 flex items-center gap-2">
+          <div className="text-[9px] tracking-[0.3em] uppercase opacity-60 mb-2 flex items-center gap-2 flex-wrap">
             {event.category}
             {event.isFree && <span className="bg-amber-400 text-stone-900 px-1.5 py-0.5">FREE</span>}
-            {event.source && <span className="bg-stone-900 text-stone-100 px-1.5 py-0.5">{event.source.toUpperCase()}</span>}
+            {event.outdoor && <span className="bg-green-100 text-green-800 px-1.5 py-0.5">OUTDOOR</span>}
+            {event.source && <span className="bg-stone-900 text-stone-100 px-1.5 py-0.5">{SOURCE_LABELS[event.source] || event.source.toUpperCase()}</span>}
           </div>
           <h1 className="display text-5xl font-black leading-[0.9] tracking-tight mb-4">{event.title}</h1>
           <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] tracking-wider mb-4">
             <span>{event.venue}</span><span>·</span>
-            <span>{event.area}</span><span>·</span>
+            <span>{event.district}</span><span>·</span>
             <span className="font-bold">{event.price}</span>
           </div>
           <div className="flex items-center gap-3">
@@ -189,6 +247,37 @@ function EventDetail({ event, onClose, isGoing, count, onToggleGoing }) {
 }
 
 /* ============================================================
+   FILTER CHIPS
+============================================================ */
+function FilterChips({ options, selected, onChange, multiSelect = true }) {
+  return (
+    <div className="flex gap-2 flex-wrap">
+      {options.map(opt => {
+        const isOn = multiSelect ? selected.has(opt.id) : selected === opt.id;
+        return (
+          <button key={opt.id}
+            onClick={() => {
+              if (multiSelect) {
+                const next = new Set(selected);
+                if (next.has(opt.id)) next.delete(opt.id);
+                else next.add(opt.id);
+                onChange(next);
+              } else {
+                onChange(opt.id);
+              }
+            }}
+            className={`text-[10px] tracking-[0.2em] uppercase px-3 py-2 border-2 transition ${
+              isOn ? "bg-stone-900 text-stone-100 border-stone-900" : "bg-white border-stone-300 hover:border-stone-900"
+            }`}>
+            {opt.label}{opt.count !== undefined ? ` · ${opt.count}` : ""}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
    MAIN APP
 ============================================================ */
 export default function WhatsHappeningBerlin() {
@@ -198,7 +287,10 @@ export default function WhatsHappeningBerlin() {
   const [timeWin, setTimeWin] = useState("all");
   const [maxMinutes, setMaxMinutes] = useState(45);
   const [interests, setInterests] = useState(new Set(ALL_CATEGORIES));
-  const [priceFilter, setPriceFilter] = useState("all");
+  const [priceBucket, setPriceBucket] = useState("all");
+  const [districts, setDistricts] = useState(new Set());
+  const [sources, setSources] = useState(new Set());
+  const [environment, setEnvironment] = useState("all"); // 'all' | 'indoor' | 'outdoor'
   const [sortBy, setSortBy] = useState("transit");
   const [showFilters, setShowFilters] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -222,7 +314,6 @@ export default function WhatsHappeningBerlin() {
   };
   useEffect(() => { requestLocation(); }, []);
 
-  // Fetch events from API whenever coords or date changes
   useEffect(() => {
     if (!coords) return;
     const selectedDate = dateStrip[dayOffset];
@@ -234,29 +325,28 @@ export default function WhatsHappeningBerlin() {
       try {
         const endDate = new Date(selectedDate.isoDate);
         endDate.setDate(endDate.getDate() + 1);
-        const url = `${API_BASE_URL}/events?lat=${coords.lat}&lng=${coords.lng}&from=${selectedDate.isoDate}&to=${endDate.toISOString().split("T")[0]}&limit=200`;
+        const url = `${API_BASE_URL}/events?lat=${coords.lat}&lng=${coords.lng}&from=${selectedDate.isoDate}&to=${endDate.toISOString().split("T")[0]}&limit=500`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`API returned ${response.status}`);
         const data = await response.json();
-        
-        // Transform API events to frontend format
+
         const transformed = data.events.map(e => {
           const startDate = new Date(e.startTime);
           const startHour = startDate.getHours() + (startDate.getDate() !== new Date(selectedDate.isoDate).getDate() ? 24 : 0);
           const endDate = e.endTime ? new Date(e.endTime) : null;
           const endHour = endDate ? endDate.getHours() + (endDate.getDate() !== startDate.getDate() ? 24 : 0) : startHour + 3;
-          
-          // Use venue coords if available, fallback to Berlin center
+
           const lat = e.venue?.lat || 52.52;
           const lng = e.venue?.lng || 13.405;
           const distance = haversine(coords.lat, coords.lng, lat, lng);
           const { mode, minutes } = estimateTransit(distance, currentHour, coords.lat, lat);
 
-          return {
+          const district = getDistrict(e.venue || {});
+          const transformedEvent = {
             id: e.id,
             title: e.title,
             venue: e.venue?.name || "Unknown venue",
-            venueId: e.venue?.name?.toLowerCase().replace(/\s+/g, "-") || "unknown",
+            district,
             area: e.venue?.area || "Berlin",
             lat,
             lng,
@@ -264,6 +354,7 @@ export default function WhatsHappeningBerlin() {
             category: e.category || "Other",
             price: e.isFree ? "Free" : e.priceAmount ? `€${e.priceAmount}` : "TBA",
             isFree: e.isFree,
+            priceAmount: e.priceAmount,
             start: startHour,
             end: endHour,
             url: e.externalUrl || "#",
@@ -276,6 +367,8 @@ export default function WhatsHappeningBerlin() {
             mode,
             minutes,
           };
+          transformedEvent.outdoor = isOutdoor(transformedEvent);
+          return transformedEvent;
         });
         setApiEvents(transformed);
       } catch (err) {
@@ -302,7 +395,6 @@ export default function WhatsHappeningBerlin() {
     const userId = "user-" + (localStorage.getItem("userId") || Math.random().toString(36).slice(2));
     if (!localStorage.getItem("userId")) localStorage.setItem("userId", userId);
 
-    // Optimistic update
     setMyGoing(prev => ({ ...prev, [eventId]: !wasGoing }));
     setApiEvents(prev => prev.map(e => e.id === eventId ? { ...e, totalAttendance: e.totalAttendance + (wasGoing ? -1 : 1) } : e));
 
@@ -314,32 +406,66 @@ export default function WhatsHappeningBerlin() {
       });
       if (!response.ok) throw new Error("Failed to update attendance");
       const data = await response.json();
-      // Update with server count
       setApiEvents(prev => prev.map(e => e.id === eventId ? { ...e, totalAttendance: data.count } : e));
     } catch (err) {
-      console.error("Failed to update attendance:", err);
-      // Revert on error
       setMyGoing(prev => ({ ...prev, [eventId]: wasGoing }));
       setApiEvents(prev => prev.map(e => e.id === eventId ? { ...e, totalAttendance: e.totalAttendance + (wasGoing ? 1 : -1) } : e));
     }
   };
 
+  // Available districts/sources from current events (with counts)
+  const availableDistricts = useMemo(() => {
+    const counts = {};
+    apiEvents.forEach(e => { counts[e.district] = (counts[e.district] || 0) + 1; });
+    return Object.entries(counts)
+      .map(([id, count]) => ({ id, label: id, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [apiEvents]);
+
+  const availableSources = useMemo(() => {
+    const counts = {};
+    apiEvents.forEach(e => { counts[e.source] = (counts[e.source] || 0) + 1; });
+    return Object.entries(counts)
+      .map(([id, count]) => ({ id, label: SOURCE_LABELS[id] || id, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [apiEvents]);
+
   const events = useMemo(() => {
     if (!coords) return [];
     const win = TIME_WINDOWS.find((w) => w.id === timeWin);
+    const priceTest = PRICE_BUCKETS.find(b => b.id === priceBucket)?.test || (() => true);
     return apiEvents
       .filter((e) => e.minutes <= maxMinutes)
       .filter((e) => win.test(e))
       .filter((e) => interests.has(e.category))
-      .filter((e) => priceFilter === "all" || (priceFilter === "free" ? e.isFree : !e.isFree))
+      .filter((e) => priceTest(e))
+      .filter((e) => districts.size === 0 || districts.has(e.district))
+      .filter((e) => sources.size === 0 || sources.has(e.source))
+      .filter((e) => environment === "all" || (environment === "outdoor" ? e.outdoor : !e.outdoor))
       .sort((a, b) => {
         if (sortBy === "popularity") return b.totalAttendance - a.totalAttendance;
         if (sortBy === "distance") return a.distance - b.distance;
         return a.minutes - b.minutes;
       });
-  }, [coords, apiEvents, timeWin, maxMinutes, interests, priceFilter, sortBy]);
+  }, [coords, apiEvents, timeWin, maxMinutes, interests, priceBucket, districts, sources, environment, sortBy]);
 
-  const activeFilterCount = (interests.size < ALL_CATEGORIES.length ? 1 : 0) + (priceFilter !== "all" ? 1 : 0) + (timeWin !== "all" ? 1 : 0);
+  const activeFilterCount =
+    (interests.size < ALL_CATEGORIES.length ? 1 : 0) +
+    (priceBucket !== "all" ? 1 : 0) +
+    (timeWin !== "all" ? 1 : 0) +
+    (districts.size > 0 ? 1 : 0) +
+    (sources.size > 0 ? 1 : 0) +
+    (environment !== "all" ? 1 : 0);
+
+  const clearAllFilters = () => {
+    setInterests(new Set(ALL_CATEGORIES));
+    setPriceBucket("all");
+    setTimeWin("all");
+    setDistricts(new Set());
+    setSources(new Set());
+    setEnvironment("all");
+    setMaxMinutes(90);
+  };
 
   const selectedWithLive = useMemo(() => {
     if (!selected) return null;
@@ -353,20 +479,19 @@ export default function WhatsHappeningBerlin() {
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Fraunces:opsz,wght@9..144,300;9..144,600;9..144,900&display=swap');
         .display { font-family: 'Fraunces', serif; font-variation-settings: "opsz" 144; }
         .grain { background-image: radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px); background-size: 4px 4px; }
-        select { background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%231c1917' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 30px; }
       `}</style>
 
       <div className="grain min-h-screen">
         <header className="border-b-2 border-stone-900 px-5 pt-7 pb-6">
           <div className="flex items-baseline justify-between mb-3">
-            <span className="text-[10px] tracking-[0.3em] uppercase opacity-60">v0.3 · connected</span>
+            <span className="text-[10px] tracking-[0.3em] uppercase opacity-60">v0.4 · filtered</span>
             <span className="text-[10px] tracking-[0.3em] uppercase opacity-60">{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}</span>
           </div>
           <h1 className="display font-black leading-[0.88] tracking-tight" style={{ fontSize: "clamp(2.5rem, 11vw, 4rem)" }}>
             What's<br />happening,<br /><span className="italic font-light">Berlin?</span>
           </h1>
           <div className="mt-4 text-[10px] tracking-[0.25em] uppercase opacity-60">
-            {loading ? "Loading…" : `${apiEvents.length} events · from Resident Advisor`}
+            {loading ? "Loading…" : `${apiEvents.length} events`}
           </div>
         </header>
 
@@ -410,33 +535,83 @@ export default function WhatsHappeningBerlin() {
             <SlidersHorizontal size={13} />
             Filters {activeFilterCount > 0 && <span className="bg-stone-900 text-stone-100 px-1.5 py-0.5 text-[9px]">{activeFilterCount}</span>}
           </button>
+          {activeFilterCount > 0 && (
+            <button onClick={clearAllFilters} className="text-[10px] tracking-[0.25em] uppercase underline opacity-70">
+              Clear all
+            </button>
+          )}
         </div>
 
         {showFilters && (
           <div className="border-b border-stone-300 bg-stone-50 px-5 py-5 space-y-5">
+
             <div>
               <div className="text-[9px] tracking-[0.3em] uppercase opacity-60 mb-2">Time of Day</div>
-              <div className="flex gap-2 flex-wrap">
-                {TIME_WINDOWS.map(w => (
-                  <button key={w.id} onClick={() => setTimeWin(w.id)}
-                    className={`text-[10px] tracking-[0.2em] uppercase px-3 py-2 border-2 transition ${
-                      timeWin === w.id ? "bg-stone-900 text-stone-100 border-stone-900" : "bg-white border-stone-400 hover:border-stone-900"
-                    }`}>{w.label}</button>
-                ))}
-              </div>
+              <FilterChips
+                options={TIME_WINDOWS.map(w => ({ id: w.id, label: w.label }))}
+                selected={timeWin}
+                onChange={setTimeWin}
+                multiSelect={false}
+              />
             </div>
 
             <div>
               <div className="text-[9px] tracking-[0.3em] uppercase opacity-60 mb-2">Price</div>
-              <div className="grid grid-cols-3 border-2 border-stone-900">
-                {[{id:"all",label:"All"},{id:"free",label:"Free"},{id:"paid",label:"Paid"}].map((p, i) => (
-                  <button key={p.id} onClick={() => setPriceFilter(p.id)}
-                    className={`text-[10px] tracking-[0.2em] uppercase py-2.5 transition ${
-                      priceFilter === p.id ? "bg-stone-900 text-stone-100" : "bg-white hover:bg-stone-200"
-                    } ${i < 2 ? "border-r-2 border-stone-900" : ""}`}>{p.label}</button>
-                ))}
-              </div>
+              <FilterChips
+                options={PRICE_BUCKETS.map(p => ({ id: p.id, label: p.label }))}
+                selected={priceBucket}
+                onChange={setPriceBucket}
+                multiSelect={false}
+              />
             </div>
+
+            <div>
+              <div className="text-[9px] tracking-[0.3em] uppercase opacity-60 mb-2">Environment</div>
+              <FilterChips
+                options={[
+                  { id: "all", label: "All" },
+                  { id: "indoor", label: "Indoor" },
+                  { id: "outdoor", label: "Outdoor" },
+                ]}
+                selected={environment}
+                onChange={setEnvironment}
+                multiSelect={false}
+              />
+            </div>
+
+            {availableDistricts.length > 0 && (
+              <div>
+                <div className="flex items-baseline justify-between mb-2">
+                  <div className="text-[9px] tracking-[0.3em] uppercase opacity-60">District</div>
+                  {districts.size > 0 && (
+                    <button onClick={() => setDistricts(new Set())}
+                      className="text-[9px] tracking-[0.2em] uppercase underline opacity-70">Clear</button>
+                  )}
+                </div>
+                <FilterChips
+                  options={availableDistricts}
+                  selected={districts}
+                  onChange={setDistricts}
+                />
+              </div>
+            )}
+
+            {availableSources.length > 0 && (
+              <div>
+                <div className="flex items-baseline justify-between mb-2">
+                  <div className="text-[9px] tracking-[0.3em] uppercase opacity-60">Source</div>
+                  {sources.size > 0 && (
+                    <button onClick={() => setSources(new Set())}
+                      className="text-[9px] tracking-[0.2em] uppercase underline opacity-70">Clear</button>
+                  )}
+                </div>
+                <FilterChips
+                  options={availableSources}
+                  selected={sources}
+                  onChange={setSources}
+                />
+              </div>
+            )}
 
             <div>
               <div className="flex items-baseline justify-between mb-2">
@@ -459,7 +634,7 @@ export default function WhatsHappeningBerlin() {
                 <span className="opacity-60">Max travel time</span>
                 <span className="font-bold">{maxMinutes} min</span>
               </div>
-              <input type="range" min="10" max="90" step="5" value={maxMinutes}
+              <input type="range" min="10" max="120" step="5" value={maxMinutes}
                 onChange={(e) => setMaxMinutes(Number(e.target.value))}
                 className="w-full accent-stone-900" />
             </div>
@@ -499,7 +674,7 @@ export default function WhatsHappeningBerlin() {
           {!loading && events.length === 0 && (
             <div className="border-2 border-dashed border-stone-400 p-10 text-center">
               <p className="display italic text-2xl mb-2">Nothing in range.</p>
-              <p className="text-xs">Increase travel time, loosen a filter, or pick another day.</p>
+              <p className="text-xs">Loosen a filter, increase travel time, or pick another day.</p>
             </div>
           )}
 
@@ -516,7 +691,7 @@ export default function WhatsHappeningBerlin() {
                       <div className="text-[9px] tracking-[0.3em] uppercase opacity-60 mb-1 flex items-center gap-1.5 flex-wrap">
                         <span>{e.category}</span>
                         {e.isFree && <span className="bg-amber-400 text-stone-900 px-1.5 py-0.5 group-hover:bg-amber-400">FREE</span>}
-                        {e.source && <span className="bg-stone-900 text-stone-100 px-1.5 py-0.5 group-hover:bg-amber-400 group-hover:text-stone-900">{e.source.toUpperCase()}</span>}
+                        {e.outdoor && <span className="bg-green-100 text-green-800 px-1.5 py-0.5 group-hover:bg-green-100">OUTDOOR</span>}
                       </div>
                       <h2 className="display text-2xl font-bold leading-tight">{e.title}</h2>
                     </div>
@@ -530,6 +705,8 @@ export default function WhatsHappeningBerlin() {
                   </div>
                   <div className="flex items-center gap-3 text-[10px] tracking-wider opacity-80 pt-2 border-t border-stone-300 group-hover:border-stone-700">
                     <span className="flex items-center gap-1 truncate"><MapPin size={11} />{e.venue}</span>
+                    <span className="flex items-center gap-1 opacity-70 flex-shrink-0">·</span>
+                    <span className="flex-shrink-0 opacity-70">{e.district}</span>
                     <span className="flex items-center gap-1 ml-auto flex-shrink-0"><Clock size={11} />{formatHour(e.start)}</span>
                     <span className="flex items-center gap-1 flex-shrink-0">
                       <Users size={11} />{count}
@@ -543,7 +720,7 @@ export default function WhatsHappeningBerlin() {
 
         <footer className="border-t-2 border-stone-900 px-5 py-6 text-[9px] tracking-[0.3em] uppercase opacity-60 space-y-1">
           <div>What's Happening, Berlin? · Connected to API</div>
-          <div>Events scraped from Resident Advisor</div>
+          <div>Events from RA, Ticketmaster, Eventbrite</div>
         </footer>
       </div>
 
